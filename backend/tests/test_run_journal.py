@@ -764,3 +764,100 @@ class TestMiddlewareTrace:
         assert mw_events[0]["content"]["hook"] == "after_model"
         assert mw_events[0]["content"]["action"] == "generate_title"
         assert mw_events[0]["content"]["changes"]["title"] == "Test Title"
+
+
+class TestFullRunSequence:
+    @pytest.mark.anyio
+    async def test_complete_run_event_sequence(self):
+        """Simulate a full run: user -> LLM -> tool_call -> tool_result -> LLM -> final reply."""
+        store = MemoryRunEventStore()
+        j = RunJournal("r1", "t1", store, flush_threshold=100)
+
+        # 1. Human message (written by worker, not journal)
+        await store.put(
+            thread_id="t1", run_id="r1",
+            event_type="human_message", category="message",
+            content={"role": "user", "content": "Search for quantum computing"},
+        )
+        j.set_first_human_message("Search for quantum computing")
+
+        # 2. Run start
+        j.on_chain_start({}, {}, run_id=uuid4(), parent_run_id=None)
+
+        # 3. First LLM call -> tool_calls
+        llm1_id = uuid4()
+        sys_msg = MagicMock(content="You are helpful.", type="system", tool_calls=[], tool_call_id=None)
+        user_msg = MagicMock(content="Search for quantum computing", type="human", tool_calls=[], tool_call_id=None)
+        j.on_chat_model_start({"name": "gpt-4o"}, [[sys_msg, user_msg]], run_id=llm1_id, tags=["lead_agent"])
+        j.on_llm_end(
+            _make_llm_response(
+                "Let me search",
+                tool_calls=[{"id": "call_1", "name": "web_search", "args": {"query": "quantum computing"}}],
+                usage={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+            ),
+            run_id=llm1_id,
+            tags=["lead_agent"],
+        )
+
+        # 4. Tool execution
+        tool_id = uuid4()
+        j.on_tool_start({"name": "web_search"}, '{"query": "quantum computing"}', run_id=tool_id, tool_call_id="call_1")
+        j.on_tool_end("Quantum computing results...", run_id=tool_id, name="web_search", tool_call_id="call_1")
+
+        # 5. Middleware: title generation
+        j.record_middleware("TitleMiddleware", "after_model", "generate_title", {"title": "Quantum Computing"})
+
+        # 6. Second LLM call -> final reply
+        llm2_id = uuid4()
+        j.on_chat_model_start({"name": "gpt-4o"}, [[sys_msg, user_msg]], run_id=llm2_id, tags=["lead_agent"])
+        j.on_llm_end(
+            _make_llm_response(
+                "Here are the results about quantum computing...",
+                usage={"input_tokens": 200, "output_tokens": 100, "total_tokens": 300},
+            ),
+            run_id=llm2_id,
+            tags=["lead_agent"],
+        )
+
+        # 7. Run end
+        j.on_chain_end({}, run_id=uuid4(), parent_run_id=None)
+        await asyncio.sleep(0.05)
+        await j.flush()
+
+        # Verify message sequence (what gets exported for training)
+        messages = await store.list_messages("t1")
+        msg_types = [m["event_type"] for m in messages]
+        assert msg_types == ["human_message", "ai_tool_call", "tool_result", "ai_message"]
+
+        # Verify message content format
+        assert messages[0]["content"]["role"] == "user"
+        assert messages[1]["content"]["role"] == "assistant"
+        assert "tool_calls" in messages[1]["content"]
+        assert messages[2]["content"]["role"] == "tool"
+        assert messages[2]["content"]["tool_call_id"] == "call_1"
+        assert messages[3]["content"]["role"] == "assistant"
+        assert messages[3]["content"]["content"] == "Here are the results about quantum computing..."
+
+        # Verify trace events
+        events = await store.list_events("t1", "r1")
+        trace_types = [e["event_type"] for e in events if e["category"] == "trace"]
+        assert "llm_request" in trace_types
+        assert "llm_response" in trace_types
+        assert "tool_start" in trace_types
+        assert "tool_end" in trace_types
+        assert "middleware" in trace_types
+        assert "llm_start" not in trace_types
+        assert "llm_end" not in trace_types
+
+        # Verify token accumulation
+        data = j.get_completion_data()
+        assert data["total_tokens"] == 420  # 120 + 300
+        assert data["llm_call_count"] == 2
+        assert data["lead_agent_tokens"] == 420
+        assert data["message_count"] == 1  # only final ai_message counts
+        assert data["last_ai_message"] == "Here are the results about quantum computing..."
+
+        # Verify training data export is trivial
+        training_messages = [m["content"] for m in messages]
+        assert all(isinstance(m, dict) for m in training_messages)
+        assert all("role" in m for m in training_messages)
