@@ -126,8 +126,13 @@ class RunRepository(RunStore):
                 await session.commit()
 
     async def list_pending(self, *, before=None):
-        now = before or datetime.now(UTC).isoformat()
-        stmt = select(RunRow).where(RunRow.status == "pending", RunRow.created_at <= now).order_by(RunRow.created_at.asc())
+        if before is None:
+            before_dt = datetime.now(UTC)
+        elif isinstance(before, datetime):
+            before_dt = before
+        else:
+            before_dt = datetime.fromisoformat(before)
+        stmt = select(RunRow).where(RunRow.status == "pending", RunRow.created_at <= before_dt).order_by(RunRow.created_at.asc())
         async with self._sf() as session:
             result = await session.execute(stmt)
             return [self._row_to_dict(r) for r in result.scalars()]

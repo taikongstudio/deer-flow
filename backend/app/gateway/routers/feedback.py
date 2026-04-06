@@ -115,6 +115,12 @@ async def delete_feedback(
 ) -> dict[str, bool]:
     """Delete a feedback record."""
     feedback_repo = get_feedback_repo(request)
+    # Verify feedback belongs to the specified thread/run before deleting
+    existing = await feedback_repo.get(feedback_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Feedback {feedback_id} not found")
+    if existing.get("thread_id") != thread_id or existing.get("run_id") != run_id:
+        raise HTTPException(status_code=404, detail=f"Feedback {feedback_id} not found in run {run_id}")
     deleted = await feedback_repo.delete(feedback_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Feedback {feedback_id} not found")

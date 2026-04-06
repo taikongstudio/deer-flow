@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,16 +23,27 @@ from deerflow.runtime.events.store.base import RunEventStore
 
 logger = logging.getLogger(__name__)
 
+_SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_\-]+$")
+
 
 class JsonlRunEventStore(RunEventStore):
     def __init__(self, base_dir: str | Path | None = None):
         self._base_dir = Path(base_dir) if base_dir else Path(".deer-flow")
         self._seq_counters: dict[str, int] = {}  # thread_id -> current max seq
 
+    @staticmethod
+    def _validate_id(value: str, label: str) -> str:
+        """Validate that an ID is safe for use in filesystem paths."""
+        if not value or not _SAFE_ID_PATTERN.match(value):
+            raise ValueError(f"Invalid {label}: must be alphanumeric/dash/underscore, got {value!r}")
+        return value
+
     def _thread_dir(self, thread_id: str) -> Path:
+        self._validate_id(thread_id, "thread_id")
         return self._base_dir / "threads" / thread_id / "runs"
 
     def _run_file(self, thread_id: str, run_id: str) -> Path:
+        self._validate_id(run_id, "run_id")
         return self._thread_dir(thread_id) / f"{run_id}.jsonl"
 
     def _next_seq(self, thread_id: str) -> int:

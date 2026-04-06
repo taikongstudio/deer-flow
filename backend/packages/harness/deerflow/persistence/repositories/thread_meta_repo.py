@@ -88,14 +88,22 @@ class ThreadMetaRepository(ThreadMetaStore):
         stmt = select(ThreadMetaRow).order_by(ThreadMetaRow.updated_at.desc())
         if status:
             stmt = stmt.where(ThreadMetaRow.status == status)
-        stmt = stmt.limit(limit).offset(offset)
-        async with self._sf() as session:
-            result = await session.execute(stmt)
-            rows = [self._row_to_dict(r) for r in result.scalars()]
 
         if metadata:
+            # When metadata filter is active, fetch a larger window and filter
+            # in Python. TODO(Phase 2): use JSON DB operators (Postgres @>,
+            # SQLite json_extract) for server-side filtering.
+            stmt = stmt.limit(limit * 5 + offset)
+            async with self._sf() as session:
+                result = await session.execute(stmt)
+                rows = [self._row_to_dict(r) for r in result.scalars()]
             rows = [r for r in rows if all(r.get("metadata", {}).get(k) == v for k, v in metadata.items())]
-        return rows
+            return rows[offset : offset + limit]
+        else:
+            stmt = stmt.limit(limit).offset(offset)
+            async with self._sf() as session:
+                result = await session.execute(stmt)
+                return [self._row_to_dict(r) for r in result.scalars()]
 
     async def update_display_name(self, thread_id: str, display_name: str) -> None:
         """Update the display_name (title) for a thread."""

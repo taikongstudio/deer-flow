@@ -65,12 +65,18 @@ class DatabaseConfig(BaseModel):
     @property
     def checkpointer_sqlite_path(self) -> str:
         """SQLite file path for the LangGraph checkpointer."""
-        return os.path.join(self.sqlite_dir, "checkpoints.db")
+        from deerflow.config.paths import resolve_path
+
+        resolved_dir = str(resolve_path(self.sqlite_dir))
+        return os.path.join(resolved_dir, "checkpoints.db")
 
     @property
     def app_sqlite_path(self) -> str:
         """SQLite file path for application ORM data."""
-        return os.path.join(self.sqlite_dir, "app.db")
+        from deerflow.config.paths import resolve_path
+
+        resolved_dir = str(resolve_path(self.sqlite_dir))
+        return os.path.join(resolved_dir, "app.db")
 
     @property
     def app_sqlalchemy_url(self) -> str:
