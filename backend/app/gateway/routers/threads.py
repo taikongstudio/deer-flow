@@ -221,12 +221,15 @@ async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteRe
     """Delete local persisted filesystem data for a thread.
 
     Cleans DeerFlow-managed thread directories, removes checkpoint data,
-    and removes the thread record from the Store.
+    removes the thread record from the Store, and removes the thread_meta
+    row from the configured ThreadMetaStore (sqlite or memory).
     """
+    from app.gateway.deps import get_thread_meta_repo
+
     # Clean local filesystem
     response = _delete_thread_data(thread_id)
 
-    # Remove from Store (best-effort)
+    # Remove from Store (best-effort) — legacy in-memory thread record
     store = get_store(request)
     if store is not None:
         try:
@@ -242,6 +245,14 @@ async def delete_thread_data(thread_id: str, request: Request) -> ThreadDeleteRe
                 await checkpointer.adelete_thread(thread_id)
         except Exception:
             logger.debug("Could not delete checkpoints for thread %s (not critical)", sanitize_log_param(thread_id))
+
+    # Remove thread_meta row (best-effort) — required for sqlite backend
+    # so the deleted thread no longer appears in /threads/search.
+    try:
+        thread_meta_repo = get_thread_meta_repo(request)
+        await thread_meta_repo.delete(thread_id)
+    except Exception:
+        logger.debug("Could not delete thread_meta for %s (not critical)", sanitize_log_param(thread_id))
 
     return response
 
@@ -499,11 +510,14 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
     """Update thread state (e.g. for human-in-the-loop resume or title rename).
 
     Writes a new checkpoint that merges *body.values* into the latest
-    channel values, then syncs any updated ``title`` field back to the Store
-    so that ``/threads/search`` reflects the change immediately.
+    channel values, then syncs any updated ``title`` field through the
+    ThreadMetaStore abstraction so that ``/threads/search`` reflects the
+    change immediately in both sqlite and memory backends.
     """
+    from app.gateway.deps import get_thread_meta_repo
+
     checkpointer = get_checkpointer(request)
-    store = get_store(request)
+    thread_meta_repo = get_thread_meta_repo(request)
 
     # checkpoint_ns must be present in the config for aput — default to ""
     # (the root graph namespace).  checkpoint_id is optional; omitting it
@@ -561,12 +575,15 @@ async def update_thread_state(thread_id: str, body: ThreadStateUpdateRequest, re
     if isinstance(new_config, dict):
         new_checkpoint_id = new_config.get("configurable", {}).get("checkpoint_id")
 
-    # Sync title changes to the Store so /threads/search reflects them immediately.
-    if store is not None and body.values and "title" in body.values:
-        try:
-            await _store_upsert(store, thread_id, values={"title": body.values["title"]})
-        except Exception:
-            logger.debug("Failed to sync title to store for thread %s (non-fatal)", sanitize_log_param(thread_id))
+    # Sync title changes through the ThreadMetaStore abstraction so /threads/search
+    # reflects them immediately in both sqlite and memory backends.
+    if body.values and "title" in body.values:
+        new_title = body.values["title"]
+        if new_title:  # Skip empty strings and None
+            try:
+                await thread_meta_repo.update_display_name(thread_id, new_title)
+            except Exception:
+                logger.debug("Failed to sync title to thread_meta for %s (non-fatal)", sanitize_log_param(thread_id))
 
     return ThreadStateResponse(
         values=serialize_channel_values(channel_values),
