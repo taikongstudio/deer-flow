@@ -97,10 +97,10 @@ class TestFeedbackRepository:
     @pytest.mark.anyio
     async def test_list_by_run(self, tmp_path):
         repo = await _make_feedback_repo(tmp_path)
-        await repo.create(run_id="r1", thread_id="t1", rating=1)
-        await repo.create(run_id="r1", thread_id="t1", rating=-1)
-        await repo.create(run_id="r2", thread_id="t1", rating=1)
-        results = await repo.list_by_run("t1", "r1")
+        await repo.create(run_id="r1", thread_id="t1", rating=1, user_id="user-1")
+        await repo.create(run_id="r1", thread_id="t1", rating=-1, user_id="user-2")
+        await repo.create(run_id="r2", thread_id="t1", rating=1, user_id="user-1")
+        results = await repo.list_by_run("t1", "r1", user_id=None)
         assert len(results) == 2
         assert all(r["run_id"] == "r1" for r in results)
         await _cleanup()
@@ -135,9 +135,9 @@ class TestFeedbackRepository:
     @pytest.mark.anyio
     async def test_aggregate_by_run(self, tmp_path):
         repo = await _make_feedback_repo(tmp_path)
-        await repo.create(run_id="r1", thread_id="t1", rating=1)
-        await repo.create(run_id="r1", thread_id="t1", rating=1)
-        await repo.create(run_id="r1", thread_id="t1", rating=-1)
+        await repo.create(run_id="r1", thread_id="t1", rating=1, user_id="user-1")
+        await repo.create(run_id="r1", thread_id="t1", rating=1, user_id="user-2")
+        await repo.create(run_id="r1", thread_id="t1", rating=-1, user_id="user-3")
         stats = await repo.aggregate_by_run("t1", "r1")
         assert stats["total"] == 3
         assert stats["positive"] == 2
